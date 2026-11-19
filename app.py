@@ -378,14 +378,43 @@ with tab1:
                 )
                 daf = (1 / daf_denominator) if daf_denominator > 0 else None
 
-                # As specified: Response Factor (RF) is assigned equal to DAF.
-                response_factor = daf
+                # Damped displacement: X_damped = DAF * X_static.
+                damped_displacement = daf * static_displacement
 
-                if daf is not None:
-                    reduction = (1 - response_factor) * 100
+                # Undamped displacement evaluated at the configured
+                # simulation duration, t = T_simulation.
+                # x_u(t) = (P0/M)/(wn^2-w^2) *
+                #          [sin(w*t) - (w/wn)*sin(wn*t)]
+                t_eval = simulation_time
+                denominator = omega_n**2 - omega**2
+                resonance_tolerance = 1e-10 * max(omega_n**2, omega**2, 1.0)
+
+                if abs(denominator) <= resonance_tolerance:
+                    # Limit of the supplied expression when omega -> omega_n.
+                    undamped_displacement = (
+                        (load / mass)
+                        * math.sin(omega_n * t_eval)
+                        / (2 * omega_n**2)
+                    )
                 else:
-                    st.error("DAF could not be calculated for the current inputs.")
+                    undamped_displacement = (
+                        (load / mass) / denominator
+                        * (
+                            math.sin(omega * t_eval)
+                            - (omega / omega_n) * math.sin(omega_n * t_eval)
+                        )
+                    )
+
+                # Compare displacement magnitudes at t = simulation duration.
+                if abs(undamped_displacement) <= 1e-15:
+                    st.error(
+                        "Undamped displacement is zero at the simulation duration; "
+                        "Response Factor cannot be calculated. Change Simulation Duration."
+                    )
                     st.stop()
+
+                response_factor = abs(damped_displacement) / abs(undamped_displacement)
+                reduction = (1 - response_factor) * 100
 
                 # As specified: calculated tensile strain = reference strain x RF.
                 tensile_strain = (
@@ -645,3 +674,4 @@ with tab2:
         hide_index=True,
         use_container_width=True
     )
+
