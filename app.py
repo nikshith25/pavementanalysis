@@ -97,8 +97,6 @@ def calculate_damping(storage, loss):
         return None, None
 
     tan_delta = loss / storage
-
-    # Damping ratio
     zeta = tan_delta / 2
 
     return tan_delta, zeta
@@ -115,20 +113,15 @@ def calculate_damping_coefficient(mass, stiffness, zeta):
 
 def calculate_natural_frequency(mass, stiffness):
 
-    if mass <= 0 or stiffness <= 0:
-        return None, None
-
-    # Natural angular frequency
     omega_n = math.sqrt(stiffness / mass)
 
-    # Natural frequency
     f_n = omega_n / (2 * math.pi)
 
     return omega_n, f_n
 
 
 # =========================================================
-# MOVING VEHICLE LOAD
+# MOVING VEHICLE FREQUENCY
 # =========================================================
 
 def moving_load_parameters(speed_kmh, distance):
@@ -136,10 +129,12 @@ def moving_load_parameters(speed_kmh, distance):
     if speed_kmh <= 0 or distance <= 0:
         return None, None, None, None
 
-    # Convert vehicle speed from km/h to m/s
+    # Convert km/h to m/s
+
     speed_ms = speed_kmh / 3.6
 
-    # Time taken by vehicle to cross loading distance
+    # Vehicle loading duration
+
     loading_duration = distance / speed_ms
 
     # USER-SPECIFIED FREQUENCY FORMULA
@@ -148,6 +143,8 @@ def moving_load_parameters(speed_kmh, distance):
     frequency = speed_ms / distance
 
     # Angular frequency
+    # omega = 2*pi*f
+
     omega = 2 * math.pi * frequency
 
     return (
@@ -164,13 +161,7 @@ def moving_load_parameters(speed_kmh, distance):
 
 def calculate_daf(frequency, natural_frequency, zeta):
 
-    if natural_frequency <= 0:
-        return None
-
-    # Frequency ratio
     r = frequency / natural_frequency
-
-    # DAF = 1 / sqrt[(1-r²)² + (2*zeta*r)²]
 
     denominator = math.sqrt(
         (1 - r**2)**2
@@ -178,7 +169,7 @@ def calculate_daf(frequency, natural_frequency, zeta):
     )
 
     if denominator <= 0:
-        return None
+        return r, None
 
     daf = 1 / denominator
 
@@ -186,48 +177,43 @@ def calculate_daf(frequency, natural_frequency, zeta):
 
 
 # =========================================================
-# STATIC AND DAMPED DISPLACEMENT
+# STATIC DISPLACEMENT
 # =========================================================
 
 def calculate_static_displacement(load, stiffness):
 
-    if stiffness <= 0:
-        return None
-
     return load / stiffness
 
 
-def calculate_damped_displacement(daf, static_displacement):
-
-    if daf is None or static_displacement is None:
-        return None
-
-    # Damped displacement amplitude
-    # X_damped = DAF * X_static
-
-    return daf * static_displacement
-
-
 # =========================================================
-# UNDAMPED DISPLACEMENT
+# UNDAMPED DISPLACEMENT HISTORY
 # =========================================================
 
-def calculate_undamped_displacement(
+def calculate_undamped_history(
     mass,
     load,
     omega_n,
     omega,
-    simulation_time
+    simulation_time,
+    steps
 ):
 
-    if (
-        mass <= 0
-        or omega_n <= 0
-        or simulation_time <= 0
-    ):
-        return None
+    """
+    User-specified equation:
 
-    t = simulation_time
+    x_u(t) = (P0/M)/(wn²-w²)
+             * [sin(wt) - (w/wn)*sin(wn*t)]
+
+    Initial conditions:
+    x(0) = 0
+    velocity(0) = 0
+    """
+
+    time = np.linspace(
+        0,
+        simulation_time,
+        steps
+    )
 
     denominator = omega_n**2 - omega**2
 
@@ -238,134 +224,60 @@ def calculate_undamped_displacement(
 
     if abs(denominator) <= tolerance:
 
-        # Resonance limit as omega approaches omega_n
+        # Resonance limit
 
         displacement = (
             (load / mass)
-            * (
-                math.sin(omega_n * t)
-                - omega_n * t * math.cos(omega_n * t)
-            )
             / (2 * omega_n**2)
+            * (
+                np.sin(omega_n * time)
+                - omega_n * time * np.cos(omega_n * time)
+            )
         )
 
     else:
 
-        # User-specified undamped displacement equation
-
         displacement = (
             (load / mass) / denominator
             * (
-                math.sin(omega * t)
+                np.sin(omega * time)
                 - (omega / omega_n)
-                * math.sin(omega_n * t)
+                * np.sin(omega_n * time)
             )
         )
 
-    return displacement
+    return time, displacement
 
 
 # =========================================================
-# RESPONSE FACTOR
+# DAMPED DISPLACEMENT HISTORY
+# NEWMARK-BETA METHOD
 # =========================================================
 
-def calculate_response_factor(
-    damped_displacement,
-    undamped_displacement
-):
-
-    if damped_displacement is None:
-        return None
-
-    if undamped_displacement is None:
-        return None
-
-    if abs(undamped_displacement) <= 1e-15:
-        return None
-
-    # RF = |X_damped| / |X_undamped|
-
-    return (
-        abs(damped_displacement)
-        / abs(undamped_displacement)
-    )
-
-
-# =========================================================
-# TENSILE STRAIN
-# =========================================================
-
-def calculate_tensile_strain(
-    response_factor,
-    reference_strain
-):
-
-    if response_factor is None:
-        return None
-
-    # Reference strain is already in microstrain.
-    # epsilon_damped = RF * epsilon_static
-
-    tensile_strain_micro = (
-        response_factor * reference_strain
-    )
-
-    return tensile_strain_micro
-
-
-# =========================================================
-# FATIGUE CALCULATIONS
-# =========================================================
-
-def fatigue_life(calculated_tensile_strain_microstrain):
-
-    # Nfi = 98.58 * (112.2 / eti)^3.89
-
-    nf1 = 98.58
-    et1 = 112.2
-
-    eti = calculated_tensile_strain_microstrain
-
-    if eti is None or eti <= 0:
-        return None
-
-    if not math.isfinite(eti):
-        return None
-
-    return nf1 * (et1 / eti) ** 3.89
-
-
-def fatigue_damage(repetitions, allowable_life):
-
-    if allowable_life is None or allowable_life <= 0:
-        return None
-
-    return repetitions / allowable_life
-
-
-# =========================================================
-# NEWMARK-BETA TRANSIENT SOLVER
-# =========================================================
-
-def solve_moving_load(
+def calculate_damped_history(
     mass,
     stiffness,
     damping,
     load,
-    duration,
+    omega,
     simulation_time,
     steps
 ):
 
-    if min(
-        mass,
-        stiffness,
-        duration,
-        simulation_time
-    ) <= 0:
-        return None
+    """
+    Equation of motion:
 
-    dt = simulation_time / (steps - 1)
+    M*x'' + C*x' + K*x = P0*sin(omega*t)
+
+    Initial conditions:
+
+    x(0) = 0
+    velocity(0) = 0
+
+    Newmark average acceleration method:
+    beta = 0.25
+    gamma = 0.5
+    """
 
     time = np.linspace(
         0,
@@ -373,31 +285,14 @@ def solve_moving_load(
         steps
     )
 
-    # Half-sine moving-load pulse
+    dt = time[1] - time[0]
 
-    force = np.zeros(steps)
+    # Same sinusoidal loading used for the
+    # undamped displacement equation.
 
-    active = time <= duration
+    force = load * np.sin(omega * time)
 
-    force[active] = load * np.sin(
-        math.pi * time[active] / duration
-    )
-
-    # Initial conditions
-    # x(0) = 0
-    # velocity(0) = 0
-
-    displacement = np.zeros(steps)
-    velocity = np.zeros(steps)
-    acceleration = np.zeros(steps)
-
-    acceleration[0] = (
-        force[0]
-        - damping * velocity[0]
-        - stiffness * displacement[0]
-    ) / mass
-
-    # Newmark average acceleration method
+    # Newmark parameters
 
     beta = 0.25
     gamma = 0.5
@@ -414,6 +309,23 @@ def solve_moving_load(
         + a0 * mass
         + a1 * damping
     )
+
+    displacement = np.zeros(steps)
+    velocity = np.zeros(steps)
+    acceleration = np.zeros(steps)
+
+    # Initial conditions
+
+    displacement[0] = 0
+    velocity[0] = 0
+
+    acceleration[0] = (
+        force[0]
+        - damping * velocity[0]
+        - stiffness * displacement[0]
+    ) / mass
+
+    # Time integration
 
     for i in range(1, steps):
 
@@ -456,6 +368,66 @@ def solve_moving_load(
         velocity,
         acceleration
     )
+
+
+# =========================================================
+# RESPONSE FACTOR
+# =========================================================
+
+def calculate_response_factor(
+    damped_maximum,
+    undamped_maximum
+):
+
+    if undamped_maximum <= 1e-15:
+        return None
+
+    return damped_maximum / undamped_maximum
+
+
+# =========================================================
+# TENSILE STRAIN
+# =========================================================
+
+def calculate_tensile_strain(
+    response_factor,
+    reference_strain
+):
+
+    # Both values are in microstrain.
+
+    return response_factor * reference_strain
+
+
+# =========================================================
+# FATIGUE LIFE
+# =========================================================
+
+def fatigue_life(calculated_tensile_strain):
+
+    # Nfi = 98.58 * (112.2 / eti)^3.89
+
+    nf1 = 98.58
+    et1 = 112.2
+
+    if calculated_tensile_strain <= 0:
+        return None
+
+    return nf1 * (
+        et1 / calculated_tensile_strain
+    ) ** 3.89
+
+
+# =========================================================
+# FATIGUE DAMAGE
+# =========================================================
+
+def fatigue_damage(repetitions, allowable_life):
+
+    if allowable_life is None or allowable_life <= 0:
+        return None
+
+    return repetitions / allowable_life
 
 
 # =========================================================
@@ -514,7 +486,7 @@ with tab1:
         minimum=0
     )
 
-    # Shared project parameters
+    # Project parameters
 
     mass = get_project_value("mass")
     stiffness = get_project_value("stiffness")
@@ -547,17 +519,19 @@ with tab1:
         if (
             storage <= 0
             or loss < 0
+            or vehicle_speed <= 0
+            or repetitions < 0
             or mass <= 0
             or stiffness <= 0
             or load <= 0
             or distance <= 0
             or simulation_time <= 0
             or reference_strain <= 0
-            or vehicle_speed <= 0
-            or repetitions < 0
         ):
 
-            st.error("Enter valid positive project parameters.")
+            st.error(
+                "Enter valid project parameters."
+            )
 
         else:
 
@@ -632,350 +606,403 @@ with tab1:
                     # 4. FREQUENCY RATIO AND DAF
                     # =====================================
 
-                    daf_result = calculate_daf(
+                    frequency_ratio, daf = calculate_daf(
                         frequency,
                         natural_frequency,
                         zeta
                     )
 
-                    if daf_result is None:
+                    # =====================================
+                    # 5. STATIC DISPLACEMENT
+                    # =====================================
+
+                    static_displacement = (
+                        calculate_static_displacement(
+                            load,
+                            stiffness
+                        )
+                    )
+
+                    # =====================================
+                    # 6. DAMPED DISPLACEMENT HISTORY
+                    # =====================================
+
+                    (
+                        time_damped,
+                        force,
+                        damped_history,
+                        damped_velocity,
+                        damped_acceleration
+                    ) = calculate_damped_history(
+                        mass=mass,
+                        stiffness=stiffness,
+                        damping=damping_c,
+                        load=load,
+                        omega=omega,
+                        simulation_time=simulation_time,
+                        steps=steps
+                    )
+
+                    # =====================================
+                    # 7. UNDAMPED DISPLACEMENT HISTORY
+                    # =====================================
+
+                    (
+                        time_undamped,
+                        undamped_history
+                    ) = calculate_undamped_history(
+                        mass=mass,
+                        load=load,
+                        omega_n=omega_n,
+                        omega=omega,
+                        simulation_time=simulation_time,
+                        steps=steps
+                    )
+
+                    # =====================================
+                    # 8. MAXIMUM DISPLACEMENTS
+                    # =====================================
+
+                    damped_index = np.argmax(
+                        np.abs(damped_history)
+                    )
+
+                    undamped_index = np.argmax(
+                        np.abs(undamped_history)
+                    )
+
+                    damped_maximum = float(
+                        np.abs(damped_history[damped_index])
+                    )
+
+                    undamped_maximum = float(
+                        np.abs(undamped_history[undamped_index])
+                    )
+
+                    damped_peak_time = float(
+                        time_damped[damped_index]
+                    )
+
+                    undamped_peak_time = float(
+                        time_undamped[undamped_index]
+                    )
+
+                    # =====================================
+                    # 9. RESPONSE FACTOR
+                    # =====================================
+
+                    response_factor = calculate_response_factor(
+                        damped_maximum,
+                        undamped_maximum
+                    )
+
+                    if response_factor is None:
 
                         st.error(
-                            "DAF calculation failed."
+                            "Response Factor cannot be calculated "
+                            "because undamped maximum displacement "
+                            "is approximately zero."
                         )
 
                     else:
 
-                        frequency_ratio, daf = daf_result
+                        response_reduction = (
+                            1 - response_factor
+                        ) * 100
 
                         # =====================================
-                        # 5. STATIC DISPLACEMENT
+                        # 10. TENSILE STRAIN
                         # =====================================
 
-                        static_displacement = (
-                            calculate_static_displacement(
-                                load,
-                                stiffness
+                        tensile_strain_micro = (
+                            calculate_tensile_strain(
+                                response_factor,
+                                reference_strain
                             )
                         )
 
                         # =====================================
-                        # 6. DAMPED DISPLACEMENT
+                        # 11. FATIGUE LIFE
                         # =====================================
 
-                        damped_displacement = (
-                            calculate_damped_displacement(
-                                daf,
-                                static_displacement
-                            )
+                        nf = fatigue_life(
+                            tensile_strain_micro
                         )
 
                         # =====================================
-                        # 7. UNDAMPED DISPLACEMENT
+                        # 12. FATIGUE DAMAGE
                         # =====================================
 
-                        undamped_displacement = (
-                            calculate_undamped_displacement(
-                                mass=mass,
-                                load=load,
-                                omega_n=omega_n,
-                                omega=omega,
-                                simulation_time=simulation_time
-                            )
+                        damage = fatigue_damage(
+                            repetitions,
+                            nf
                         )
 
                         # =====================================
-                        # 8. RESPONSE FACTOR
+                        # DISPLAY RESULTS
                         # =====================================
 
-                        response_factor = (
-                            calculate_response_factor(
-                                damped_displacement,
-                                undamped_displacement
-                            )
+                        st.markdown(
+                            "### 1. Damping Properties"
                         )
 
-                        if response_factor is None:
+                        a, b, c = st.columns(3)
 
-                            st.error(
-                                "Response Factor cannot be calculated "
-                                "because the undamped displacement is "
-                                "approximately zero at the selected "
-                                "simulation duration."
-                            )
+                        a.metric(
+                            "tan(δ)",
+                            f"{tan_delta:.6f}"
+                        )
 
-                        else:
+                        b.metric(
+                            "Damping Ratio (ζ)",
+                            f"{zeta:.6f}"
+                        )
 
-                            response_reduction = (
-                                1 - response_factor
-                            ) * 100
+                        c.metric(
+                            "Damping Coefficient (C)",
+                            f"{damping_c:,.4f} Ns/m"
+                        )
 
-                            # =====================================
-                            # 9. TENSILE STRAIN
-                            # =====================================
+                        # -------------------------------------
 
-                            tensile_strain_micro = (
-                                calculate_tensile_strain(
-                                    response_factor,
-                                    reference_strain
-                                )
-                            )
+                        st.divider()
 
-                            # =====================================
-                            # 10. FATIGUE LIFE
-                            # =====================================
+                        st.markdown(
+                            "### 2. Frequency Calculations"
+                        )
 
-                            nf = fatigue_life(
-                                tensile_strain_micro
-                            )
+                        a, b, c = st.columns(3)
 
-                            # =====================================
-                            # 11. FATIGUE DAMAGE
-                            # =====================================
+                        a.metric(
+                            "Moving-Load Frequency",
+                            f"{frequency:.6f} Hz"
+                        )
 
-                            damage = fatigue_damage(
-                                repetitions,
-                                nf
-                            )
+                        b.metric(
+                            "Natural Frequency",
+                            f"{natural_frequency:.6f} Hz"
+                        )
 
-                            # =====================================
-                            # 12. NEWMARK TRANSIENT RESPONSE
-                            # =====================================
+                        c.metric(
+                            "Frequency Ratio",
+                            f"{frequency_ratio:.6f}"
+                        )
 
-                            transient_response = solve_moving_load(
-                                mass=mass,
-                                stiffness=stiffness,
-                                damping=damping_c,
-                                load=load,
-                                duration=loading_duration,
-                                simulation_time=simulation_time,
-                                steps=steps
-                            )
+                        a, b, c = st.columns(3)
 
-                            if transient_response is not None:
+                        a.metric(
+                            "Moving-Load Angular Frequency",
+                            f"{omega:.4f} rad/s"
+                        )
 
-                                (
-                                    time,
-                                    force,
-                                    transient_displacement,
-                                    transient_velocity,
-                                    transient_acceleration
-                                ) = transient_response
+                        b.metric(
+                            "Natural Angular Frequency",
+                            f"{omega_n:.4f} rad/s"
+                        )
 
-                                dynamic_peak = np.max(
-                                    np.abs(transient_displacement)
-                                )
+                        c.metric(
+                            "Damped Natural Frequency",
+                            f"{damped_frequency:.4f} Hz"
+                        )
 
-                            else:
+                        # -------------------------------------
 
-                                dynamic_peak = None
+                        st.divider()
 
-                            # =====================================
-                            # DISPLAY RESULTS
-                            # =====================================
+                        st.markdown(
+                            "### 3. Dynamic Amplification Factor"
+                        )
 
-                            st.markdown(
-                                "### 1. Damping Properties"
-                            )
+                        a, b, c = st.columns(3)
 
-                            a, b, c = st.columns(3)
+                        a.metric(
+                            "Static Displacement",
+                            f"{static_displacement * 1000:.6f} mm"
+                        )
 
-                            a.metric(
-                                "tan(δ)",
-                                f"{tan_delta:.6f}"
-                            )
+                        a = a
 
-                            b.metric(
-                                "Damping Ratio (ζ)",
-                                f"{zeta:.6f}"
-                            )
+                        b.metric(
+                            "Dynamic Amplification Factor",
+                            f"{daf:.6f}" if daf is not None else "—"
+                        )
 
-                            c.metric(
-                                "Damping Coefficient (C)",
-                                f"{damping_c:,.4f} Ns/m"
-                            )
+                        c.metric(
+                            "DAF-Based Displacement",
+                            f"{daf * static_displacement * 1000:.6f} mm"
+                            if daf is not None
+                            else "—"
+                        )
 
-                            # -------------------------------------
+                        # -------------------------------------
 
-                            st.divider()
+                        st.divider()
 
-                            st.markdown(
-                                "### 2. Frequency Calculations"
-                            )
+                        st.markdown(
+                            "### 4. Transient Displacement Comparison"
+                        )
 
-                            a, b, c = st.columns(3)
+                        a, b = st.columns(2)
 
-                            a.metric(
-                                "Moving-Load Frequency",
-                                f"{frequency:.6f} Hz"
-                            )
+                        a.metric(
+                            "Maximum Damped Displacement",
+                            f"{damped_maximum * 1000:.6f} mm"
+                        )
 
-                            b.metric(
-                                "Natural Frequency",
-                                f"{natural_frequency:.6f} Hz"
-                            )
+                        b.metric(
+                            "Maximum Undamped Displacement",
+                            f"{undamped_maximum * 1000:.6f} mm"
+                        )
 
-                            c.metric(
-                                "Frequency Ratio (r)",
-                                f"{frequency_ratio:.6f}"
-                            )
+                        a, b = st.columns(2)
 
-                            a, b, c = st.columns(3)
+                        a.metric(
+                            "Damped Peak Time",
+                            f"{damped_peak_time:.6f} s"
+                        )
 
-                            a.metric(
-                                "Moving-Load Angular Frequency",
-                                f"{omega:.4f} rad/s"
-                            )
+                        b.metric(
+                            "Undamped Peak Time",
+                            f"{undamped_peak_time:.6f} s"
+                        )
 
-                            b.metric(
-                                "Natural Angular Frequency",
-                                f"{omega_n:.4f} rad/s"
-                            )
+                        # -------------------------------------
 
-                            c.metric(
-                                "Damped Natural Frequency",
-                                f"{damped_frequency:.4f} Hz"
-                            )
+                        st.divider()
 
-                            # -------------------------------------
+                        st.markdown(
+                            "### 5. Response Factor"
+                        )
 
-                            st.divider()
+                        a, b = st.columns(2)
 
-                            st.markdown(
-                                "### 3. Dynamic Amplification Factor"
-                            )
+                        a.metric(
+                            "Response Factor",
+                            f"{response_factor:.6f}"
+                        )
 
-                            a, b, c = st.columns(3)
+                        b.metric(
+                            "Response Reduction",
+                            f"{response_reduction:.4f}%"
+                        )
 
-                            a.metric(
-                                "Dynamic Peak Displacement (Newmark)",
-                                f"{dynamic_peak * 1000:.6f} mm"
-                                if dynamic_peak is not None
-                                else "—"
-                            )
+                        # -------------------------------------
 
-                            b.metric(
-                                "Static Displacement",
-                                f"{static_displacement * 1000:.6f} mm"
-                            )
+                        st.divider()
 
-                            c.metric(
-                                "Dynamic Amplification Factor",
-                                f"{daf:.6f}"
-                            )
+                        st.markdown(
+                            "### 6. Tensile Strain Calculation"
+                        )
 
-                            # -------------------------------------
+                        a, b = st.columns(2)
 
-                            st.divider()
+                        a.metric(
+                            "Reference Strain",
+                            f"{reference_strain:.4f} με"
+                        )
 
-                            st.markdown(
-                                "### 4. Response Factor"
-                            )
+                        b.metric(
+                            "Calculated Tensile Strain",
+                            f"{tensile_strain_micro:.4f} με"
+                        )
 
-                            a, b = st.columns(2)
+                        # -------------------------------------
 
-                            a.metric(
-                                "Response Factor",
-                                f"{response_factor:.6f}"
-                            )
+                        st.divider()
 
-                            b.metric(
-                                "Response Reduction",
-                                f"{response_reduction:.4f}%"
-                            )
+                        st.markdown(
+                            "### 7. Fatigue Damage"
+                        )
 
-                            # -------------------------------------
+                        st.metric(
+                            "Fatigue Damage",
+                            f"{damage:.8f}"
+                            if damage is not None
+                            else "—"
+                        )
 
-                            st.divider()
+                        # =====================================
+                        # COMPLETE RESULTS TABLE
+                        # =====================================
 
-                            st.markdown(
-                                "### 5. Tensile Strain Calculation"
-                            )
+                        st.divider()
 
-                            a, b = st.columns(2)
+                        st.subheader(
+                            "Complete Calculation Results"
+                        )
 
-                            a.metric(
-                                "Reference Strain",
-                                f"{reference_strain:.4f} με"
-                            )
+                        results = pd.DataFrame([
+                            ["Storage Modulus", storage, "MPa"],
+                            ["Loss Modulus", loss, "MPa"],
+                            ["tan(δ)", tan_delta, "-"],
+                            ["Damping Ratio", zeta, "-"],
+                            ["Damping Coefficient", damping_c, "Ns/m"],
+                            ["Vehicle Speed", vehicle_speed, "km/h"],
+                            ["Vehicle Speed", speed_ms, "m/s"],
+                            ["Loading Distance", distance, "m"],
+                            ["Loading Duration", loading_duration, "s"],
+                            ["Simulation Duration", simulation_time, "s"],
+                            ["Moving-Load Frequency", frequency, "Hz"],
+                            ["Moving-Load Angular Frequency", omega, "rad/s"],
+                            ["Natural Frequency", natural_frequency, "Hz"],
+                            ["Natural Angular Frequency", omega_n, "rad/s"],
+                            ["Damped Natural Frequency", damped_frequency, "Hz"],
+                            ["Frequency Ratio", frequency_ratio, "-"],
+                            ["Static Displacement", static_displacement, "m"],
+                            ["DAF", daf, "-"],
+                            [
+                                "DAF-Based Displacement",
+                                daf * static_displacement,
+                                "m"
+                            ],
+                            [
+                                "Maximum Damped Displacement",
+                                damped_maximum,
+                                "m"
+                            ],
+                            [
+                                "Maximum Undamped Displacement",
+                                undamped_maximum,
+                                "m"
+                            ],
+                            [
+                                "Damped Peak Time",
+                                damped_peak_time,
+                                "s"
+                            ],
+                            [
+                                "Undamped Peak Time",
+                                undamped_peak_time,
+                                "s"
+                            ],
+                            ["Response Factor", response_factor, "-"],
+                            ["Response Reduction", response_reduction, "%"],
+                            ["Reference Tensile Strain", reference_strain, "με"],
+                            ["Calculated Tensile Strain", tensile_strain_micro, "με"],
+                            ["Allowable Fatigue Life", nf, "repetitions"],
+                            ["Applied Load Repetitions", repetitions, "repetitions"],
+                            ["Fatigue Damage", damage, "-"]
+                        ], columns=[
+                            "Parameter",
+                            "Value",
+                            "Unit"
+                        ])
 
-                            b.metric(
-                                "Calculated Tensile Strain",
-                                f"{tensile_strain_micro:.4f} με"
-                            )
+                        st.dataframe(
+                            results,
+                            hide_index=True,
+                            use_container_width=True
+                        )
 
-                            # -------------------------------------
-
-                            st.divider()
-
-                            st.markdown(
-                                "### 6. Fatigue Damage"
-                            )
-
-                            st.metric(
-                                "Fatigue Damage",
-                                f"{damage:.8f}"
-                                if damage is not None
-                                else "—"
-                            )
-
-                            # =====================================
-                            # COMPLETE RESULTS TABLE
-                            # =====================================
-
-                            st.divider()
-
-                            st.subheader(
-                                "Complete Calculation Results"
-                            )
-
-                            results = pd.DataFrame([
-                                ["Storage Modulus", storage, "MPa"],
-                                ["Loss Modulus", loss, "MPa"],
-                                ["tan(δ)", tan_delta, "-"],
-                                ["Damping Ratio", zeta, "-"],
-                                ["Damping Coefficient", damping_c, "Ns/m"],
-                                ["Vehicle Speed", vehicle_speed, "km/h"],
-                                ["Vehicle Speed", speed_ms, "m/s"],
-                                ["Loading Distance", distance, "m"],
-                                ["Loading Duration", loading_duration, "s"],
-                                ["Moving-Load Frequency", frequency, "Hz"],
-                                ["Moving-Load Angular Frequency", omega, "rad/s"],
-                                ["Natural Frequency", natural_frequency, "Hz"],
-                                ["Natural Angular Frequency", omega_n, "rad/s"],
-                                ["Damped Natural Frequency", damped_frequency, "Hz"],
-                                ["Frequency Ratio", frequency_ratio, "-"],
-                                ["Static Displacement", static_displacement, "m"],
-                                ["Damped Displacement (DAF × Static)", damped_displacement, "m"],
-                                ["Undamped Displacement at T", undamped_displacement, "m"],
-                                ["Dynamic Amplification Factor", daf, "-"],
-                                ["Response Factor", response_factor, "-"],
-                                ["Response Reduction", response_reduction, "%"],
-                                ["Reference Tensile Strain", reference_strain, "με"],
-                                ["Calculated Tensile Strain", tensile_strain_micro, "με"],
-                                ["Applied Load Repetitions", repetitions, "repetitions"],
-                                ["Fatigue Damage", damage, "-"]
-                            ], columns=[
-                                "Parameter",
-                                "Value",
-                                "Unit"
-                            ])
-
-                            st.dataframe(
-                                results,
-                                hide_index=True,
-                                use_container_width=True
-                            )
-
-                            st.download_button(
-                                "Download Calculation Results",
-                                results.to_csv(
-                                    index=False
-                                ).encode("utf-8"),
-                                "pavement_results.csv",
-                                "text/csv",
-                                key="download_results"
-                            )
+                        st.download_button(
+                            "Download Calculation Results",
+                            results.to_csv(
+                                index=False
+                            ).encode("utf-8"),
+                            "pavement_results.csv",
+                            "text/csv",
+                            key="download_results"
+                        )
 
     else:
 
