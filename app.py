@@ -1,4 +1,3 @@
-
 import math
 import numpy as np
 import pandas as pd
@@ -93,16 +92,18 @@ def calculate_damping_coefficient(mass, stiffness, zeta):
     return 2 * zeta * math.sqrt(mass * stiffness)
 
 
-def fatigue_life(strain, modulus):
+def fatigue_life(calculated_tensile_strain_microstrain):
 
-    if strain <= 0 or modulus <= 0:
+    # User-supplied formula: Nfi = Nf1 * (et1 / eti)^3.89
+    # Nf1 = 98.58 and et1 = 112.2 are constants.
+    nf1 = 98.58
+    et1 = 112.2
+    eti = calculated_tensile_strain_microstrain
+
+    if eti <= 0 or not math.isfinite(eti):
         return None
 
-    return (
-        0.0796
-        * (1 / strain) ** 3.291
-        * (1 / modulus) ** 0.854
-    )
+    return nf1 * (et1 / eti) ** 3.89
 
 
 def fatigue_damage(repetitions, allowable_life):
@@ -381,9 +382,10 @@ with tab1:
                         * 1e-6
                     )
 
+                    tensile_strain_micro = tensile_strain * 1e6
+
                     nf = fatigue_life(
-                        tensile_strain,
-                        asphalt_modulus
+                        tensile_strain_micro
                     )
 
                     damage = fatigue_damage(
@@ -409,67 +411,12 @@ with tab1:
                     )
 
                     # -------------------------------------
-                    # 2. VEHICLE LOADING
-                    # -------------------------------------
-
-                    st.divider()
-
-                    st.markdown("### 2. Moving Vehicle Load")
-
-                    a, b, c, d = st.columns(4)
-
-                    a.metric("Speed", f"{vehicle_speed:.3f} km/h")
-
-                    b.metric("Speed", f"{speed_ms:.4f} m/s")
-
-                    c.metric("Loading Duration", f"{td:.6f} s")
-
-                    d.metric("Characteristic Frequency", f"{fc:.4f} Hz")
-
-                    a, b = st.columns(2)
-
-                    a.metric(
-                        "Angular Frequency (ω)",
-                        f"{omega:.4f} rad/s"
-                    )
-
-                    b.metric(
-                        "Loading Distance",
-                        f"{distance:.4f} m"
-                    )
-
-                    # -------------------------------------
-                    # 3. NATURAL FREQUENCY
-                    # -------------------------------------
-
-                    st.divider()
-
-                    st.markdown("### 3. Natural Frequency")
-
-                    a, b, c = st.columns(3)
-
-                    a.metric(
-                        "Undamped Natural Frequency",
-                        f"{natural_frequency:.4f} Hz"
-                    )
-
-                    b.metric(
-                        "Damped Natural Frequency",
-                        f"{damped_frequency:.4f} Hz"
-                    )
-
-                    c.metric(
-                        "Natural Angular Frequency",
-                        f"{omega_n:.4f} rad/s"
-                    )
-
-                    # -------------------------------------
                     # 4. DYNAMIC AMPLIFICATION FACTOR
                     # -------------------------------------
 
                     st.divider()
 
-                    st.markdown("### 4. Dynamic Amplification Factor")
+                    st.markdown("### 2. Dynamic Amplification Factor")
 
                     a, b, c = st.columns(3)
 
@@ -494,7 +441,7 @@ with tab1:
 
                     st.divider()
 
-                    st.markdown("### 5. Response Factor")
+                    st.markdown("### 3. Response Factor")
 
                     a, b = st.columns(2)
 
@@ -514,7 +461,7 @@ with tab1:
 
                     st.divider()
 
-                    st.markdown("### 6. Tensile Strain Calculation")
+                    st.markdown("### 4. Tensile Strain Calculation")
 
                     a, b = st.columns(2)
 
@@ -529,31 +476,19 @@ with tab1:
                     )
 
                     # -------------------------------------
+                    # -------------------------------------
                     # 7. FATIGUE DAMAGE
                     # -------------------------------------
 
                     st.divider()
 
-                    st.markdown("### 7. Fatigue Damage")
+                    st.markdown("### 5. Fatigue Damage")
 
-                    a, b, c = st.columns(3)
-
-                    a.metric(
-                        "Allowable Fatigue Life (Nf)",
-                        f"{nf:,.2f}" if nf else "—"
-                    )
-
-                    b.metric(
-                        "Applied Repetitions",
-                        f"{repetitions:,.0f}"
-                    )
-
-                    c.metric(
+                    st.metric(
                         "Fatigue Damage",
                         f"{damage:.8f}" if damage is not None else "—"
                     )
 
-                    # -------------------------------------
                     # COMPLETE RESULTS
                     # -------------------------------------
 
@@ -567,13 +502,6 @@ with tab1:
                         ["tan(δ)", tan_delta, "-"],
                         ["Damping Ratio", zeta, "-"],
                         ["Damping Coefficient", damping_c, "Ns/m"],
-                        ["Vehicle Speed", vehicle_speed, "km/h"],
-                        ["Vehicle Speed", speed_ms, "m/s"],
-                        ["Loading Duration", td, "s"],
-                        ["Characteristic Frequency", fc, "Hz"],
-                        ["Angular Frequency", omega, "rad/s"],
-                        ["Natural Frequency", natural_frequency, "Hz"],
-                        ["Damped Natural Frequency", damped_frequency, "Hz"],
                         ["Dynamic Peak Displacement", dynamic_peak, "m"],
                         ["Static Displacement", static_displacement, "m"],
                         ["Dynamic Amplification Factor", daf, "-"],
@@ -581,8 +509,6 @@ with tab1:
                         ["Response Reduction", reduction, "%"],
                         ["Reference Tensile Strain", reference_strain, "με"],
                         ["Calculated Tensile Strain", tensile_strain * 1e6, "με"],
-                        ["Fatigue Life", nf, "repetitions"],
-                        ["Applied Repetitions", repetitions, "repetitions"],
                         ["Fatigue Damage", damage, "-"]
                     ], columns=["Parameter", "Value", "Unit"])
 
@@ -687,11 +613,8 @@ with tab2:
             minimum=0
         )
 
-        steps = numeric_input(
-            "Numerical Time Steps",
-            "time_steps",
-            minimum=100
-        )
+        # Numerical time steps remain configured internally and are used
+        # by the Newmark-beta solver; intentionally hidden from the UI.
 
     st.divider()
 
