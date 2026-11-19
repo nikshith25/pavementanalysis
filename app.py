@@ -1,11 +1,12 @@
+
 import math
+import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.graph_objects as go
 
-# =====================================================
+# =========================================================
 # PAGE CONFIGURATION
-# =====================================================
+# =========================================================
 
 st.set_page_config(
     page_title="Flexible Pavement Analysis",
@@ -16,20 +17,24 @@ st.set_page_config(
 st.title("Flexible Pavement Response & Fatigue Analysis")
 
 
-# =====================================================
-# DEFAULT VALUES — INITIALISE ONLY ONCE
-# =====================================================
+# =========================================================
+# DEFAULT PARAMETERS
+# =========================================================
 
 DEFAULTS = {
     "storage_modulus": "8043",
     "loss_modulus": "3184",
+    "vehicle_speed": "40",
     "mass": "264",
     "stiffness": "1.479915e9",
     "vehicle_load": "560000",
     "loading_distance": "0.2132",
     "simulation_duration": "0.15",
     "temperature": "21.1",
-    "vehicle_speeds": [20, 40, 60, 80]
+    "reference_strain": "112.2",
+    "asphalt_modulus": "300000",
+    "load_repetitions": "1000000",
+    "time_steps": "4000"
 }
 
 for key, value in DEFAULTS.items():
@@ -37,20 +42,20 @@ for key, value in DEFAULTS.items():
         st.session_state[key] = value
 
 
-# =====================================================
-# NUMERIC INPUT FUNCTION
-# =====================================================
+# =========================================================
+# NUMERIC INPUT
+# =========================================================
 
 def numeric_input(label, key, unit="", minimum=None):
 
-    label_display = f"{label} ({unit})" if unit else label
+    label_text = f"{label} ({unit})" if unit else label
 
     raw = st.text_input(
-        label_display,
+        label_text,
         key=key
     ).strip().replace(",", "")
 
-    if raw == "":
+    if not raw:
         return None
 
     try:
@@ -60,24 +65,19 @@ def numeric_input(label, key, unit="", minimum=None):
             return None
 
         if minimum is not None and value < minimum:
-            st.caption(f"{label} must be at least {minimum}.")
             return None
 
         return value
 
     except ValueError:
-        st.caption(f"Enter a valid number for {label}.")
         return None
 
 
-# =====================================================
+# =========================================================
 # CALCULATION FUNCTIONS
-# =====================================================
+# =========================================================
 
 def calculate_damping(storage, loss):
-
-    if storage is None or loss is None:
-        return None, None
 
     if storage <= 0 or loss < 0:
         return None, None
@@ -90,73 +90,164 @@ def calculate_damping(storage, loss):
 
 def calculate_damping_coefficient(mass, stiffness, zeta):
 
-    if mass is None or stiffness is None or zeta is None:
-        return None
-
-    if mass <= 0 or stiffness <= 0:
-        return None
-
     return 2 * zeta * math.sqrt(mass * stiffness)
 
 
-def calculate_daf(r, zeta):
+def fatigue_life(strain, modulus):
 
-    denominator = math.sqrt(
-        (1 - r**2)**2 + (2 * zeta * r)**2
-    )
-
-    if denominator == 0:
+    if strain <= 0 or modulus <= 0:
         return None
 
-    return 1 / denominator
-
-
-# =====================================================
-# READ SHARED PROJECT VALUES
-# =====================================================
-
-def get_project_values():
-
-    mass = numeric_input(
-        "Mass (M)",
-        "mass",
-        "kg",
-        minimum=0.000001
+    return (
+        0.0796
+        * (1 / strain) ** 3.291
+        * (1 / modulus) ** 0.854
     )
 
-    stiffness = numeric_input(
-        "Stiffness (K)",
-        "stiffness",
-        "N/m",
-        minimum=0.000001
+
+def fatigue_damage(repetitions, allowable_life):
+
+    if allowable_life is None or allowable_life <= 0:
+        return None
+
+    return repetitions / allowable_life
+
+
+# =========================================================
+# MOVING VEHICLE LOAD
+# =========================================================
+
+def moving_load_parameters(speed_kmh, distance, load):
+
+    speed_ms = speed_kmh / 3.6
+
+    duration = distance / speed_ms
+
+    characteristic_frequency = 1 / (2 * duration)
+
+    angular_frequency = 2 * math.pi * characteristic_frequency
+
+    return (
+        speed_ms,
+        duration,
+        characteristic_frequency,
+        angular_frequency
     )
 
-    return mass, stiffness
+
+# =========================================================
+# NEWMARK-BETA SDOF TRANSIENT SOLVER
+# =========================================================
+
+def solve_moving_load(
+    mass,
+    stiffness,
+    damping,
+    load,
+    duration,
+    simulation_time,
+    steps
+):
+
+    if min(mass, stiffness, duration, simulation_time) <= 0:
+        return None
+
+    dt = simulation_time / (steps - 1)
+
+    time = np.linspace(0, simulation_time, steps)
+
+    # Half-sine moving-load pulse
+    force = np.zeros(steps)
+
+    active = time <= duration
+
+    force[active] = load * np.sin(
+        math.pi * time[active] / duration
+    )
+
+    # Newmark average acceleration parameters
+    beta = 0.25
+    gamma = 0.5
+
+    a0 = 1 / (beta * dt**2)
+    a1 = gamma / (beta * dt)
+    a2 = 1 / (beta * dt)
+    a3 = 1 / (2 * beta) - 1
+    a4 = gamma / beta - 1
+    a5 = dt * (gamma / (2 * beta) - 1)
+
+    effective_stiffness = (
+        stiffness + a0 * mass + a1 * damping
+    )
+
+    displacement = np.zeros(steps)
+    velocity = np.zeros(steps)
+    acceleration = np.zeros(steps)
+
+    acceleration[0] = (
+        force[0]
+        - damping * velocity[0]
+        - stiffness * displacement[0]
+    ) / mass
+
+    for i in range(1, steps):
+
+        effective_force = (
+            force[i]
+            + mass * (
+                a0 * displacement[i-1]
+                + a2 * velocity[i-1]
+                + a3 * acceleration[i-1]
+            )
+            + damping * (
+                a1 * displacement[i-1]
+                + a4 * velocity[i-1]
+                + a5 * acceleration[i-1]
+            )
+        )
+
+        displacement[i] = (
+            effective_force / effective_stiffness
+        )
+
+        acceleration[i] = (
+            a0 * (displacement[i] - displacement[i-1])
+            - a2 * velocity[i-1]
+            - a3 * acceleration[i-1]
+        )
+
+        velocity[i] = (
+            velocity[i-1]
+            + dt * (
+                (1-gamma) * acceleration[i-1]
+                + gamma * acceleration[i]
+            )
+        )
+
+    return time, force, displacement, velocity, acceleration
 
 
-# =====================================================
+# =========================================================
 # MAIN TABS
-# =====================================================
+# =========================================================
 
-tab1, tab2, tab3 = st.tabs([
-    "Damping Calculator",
-    "Project Parameters",
-    "Visualisation"
+tab1, tab2 = st.tabs([
+    "Damping & Response Calculator",
+    "Project Parameters"
 ])
 
 
-# =====================================================
-# TAB 1 — DAMPING CALCULATOR
-# =====================================================
+# =========================================================
+# TAB 1 — MAIN CALCULATOR
+# =========================================================
 
 with tab1:
 
     st.subheader("Material Properties")
 
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    with col1:
-
+    with c1:
         storage = numeric_input(
             "Storage Modulus (E′)",
             "storage_modulus",
@@ -164,8 +255,7 @@ with tab1:
             minimum=0.000001
         )
 
-    with col2:
-
+    with c2:
         loss = numeric_input(
             "Loss Modulus (E″)",
             "loss_modulus",
@@ -173,115 +263,393 @@ with tab1:
             minimum=0
         )
 
-    # Read shared project parameters.
-    # These are edited only in Tab 2.
+    st.divider()
+
+    st.subheader("Vehicle Loading")
+
+    vehicle_speed = numeric_input(
+        "Vehicle Speed",
+        "vehicle_speed",
+        "km/h",
+        minimum=0.000001
+    )
+
+    # Shared project parameters
 
     mass = float(st.session_state["mass"])
     stiffness = float(st.session_state["stiffness"])
-
-    tan_delta, zeta = calculate_damping(
-        storage,
-        loss
-    )
+    load = float(st.session_state["vehicle_load"])
+    distance = float(st.session_state["loading_distance"])
+    simulation_time = float(st.session_state["simulation_duration"])
+    reference_strain = float(st.session_state["reference_strain"])
+    asphalt_modulus = float(st.session_state["asphalt_modulus"])
+    repetitions = float(st.session_state["load_repetitions"])
+    steps = int(float(st.session_state["time_steps"]))
 
     st.divider()
 
     st.subheader("Calculated Results")
 
-    if tan_delta is not None:
+    if (
+        storage is not None
+        and loss is not None
+        and vehicle_speed is not None
+    ):
 
-        damping_c = calculate_damping_coefficient(
-            mass,
-            stiffness,
-            zeta
+        tan_delta, zeta = calculate_damping(
+            storage,
+            loss
         )
 
-        r1, r2, r3 = st.columns(3)
+        if zeta >= 1:
 
-        r1.metric(
-            "tan(δ)",
-            f"{tan_delta:.6f}"
-        )
+            st.error(
+                "Damping ratio must be below 1 for this underdamped model."
+            )
 
-        r2.metric(
-            "Damping Ratio (ζ)",
-            f"{zeta:.6f}"
-        )
+        elif mass <= 0 or stiffness <= 0 or load <= 0 or distance <= 0:
 
-        r3.metric(
-            "Damping Coefficient (C)",
-            f"{damping_c:,.4f} Ns/m"
-        )
+            st.error("Project parameters must be positive.")
 
-        st.divider()
+        elif steps < 100 or steps > 100000:
 
-        results = pd.DataFrame([
-            ["Storage Modulus", storage, "MPa"],
-            ["Loss Modulus", loss, "MPa"],
-            ["tan(δ)", tan_delta, "-"],
-            ["Damping Ratio", zeta, "-"],
-            ["Mass", mass, "kg"],
-            ["Stiffness", stiffness, "N/m"],
-            ["Damping Coefficient", damping_c, "Ns/m"]
-        ], columns=["Parameter", "Value", "Unit"])
+            st.error("Time steps must be between 100 and 100000.")
 
-        st.dataframe(
-            results,
-            hide_index=True,
-            use_container_width=True
-        )
+        else:
+
+            damping_c = calculate_damping_coefficient(
+                mass,
+                stiffness,
+                zeta
+            )
+
+            # Natural frequency
+
+            omega_n = math.sqrt(stiffness / mass)
+
+            natural_frequency = omega_n / (2 * math.pi)
+
+            omega_d = omega_n * math.sqrt(1 - zeta**2)
+
+            damped_frequency = omega_d / (2 * math.pi)
+
+            # Vehicle loading parameters
+
+            speed_ms, td, fc, omega = moving_load_parameters(
+                vehicle_speed,
+                distance,
+                load
+            )
+
+            # Transient response
+
+            response = solve_moving_load(
+                mass,
+                stiffness,
+                damping_c,
+                load,
+                td,
+                simulation_time,
+                steps
+            )
+
+            if response is not None:
+
+                time, force, displacement, velocity, acceleration = response
+
+                dynamic_peak = np.max(np.abs(displacement))
+
+                static_displacement = load / stiffness
+
+                if static_displacement > 0:
+
+                    daf = dynamic_peak / static_displacement
+
+                    # Response factor uses dynamic displacement
+                    # divided by static reference displacement.
+
+                    response_factor = daf
+
+                    reduction = (1 - response_factor) * 100
+
+                    # Preliminary strain sensitivity:
+                    # strain is scaled by displacement DAF.
+
+                    tensile_strain = (
+                        reference_strain
+                        * response_factor
+                        * 1e-6
+                    )
+
+                    nf = fatigue_life(
+                        tensile_strain,
+                        asphalt_modulus
+                    )
+
+                    damage = fatigue_damage(
+                        repetitions,
+                        nf
+                    )
+
+                    # -------------------------------------
+                    # 1. DAMPING RESULTS
+                    # -------------------------------------
+
+                    st.markdown("### 1. Damping Properties")
+
+                    a, b, c = st.columns(3)
+
+                    a.metric("tan(δ)", f"{tan_delta:.6f}")
+
+                    b.metric("Damping Ratio (ζ)", f"{zeta:.6f}")
+
+                    c.metric(
+                        "Damping Coefficient (C)",
+                        f"{damping_c:,.4f}"
+                    )
+
+                    # -------------------------------------
+                    # 2. VEHICLE LOADING
+                    # -------------------------------------
+
+                    st.divider()
+
+                    st.markdown("### 2. Moving Vehicle Load")
+
+                    a, b, c, d = st.columns(4)
+
+                    a.metric("Speed", f"{vehicle_speed:.3f} km/h")
+
+                    b.metric("Speed", f"{speed_ms:.4f} m/s")
+
+                    c.metric("Loading Duration", f"{td:.6f} s")
+
+                    d.metric("Characteristic Frequency", f"{fc:.4f} Hz")
+
+                    a, b = st.columns(2)
+
+                    a.metric(
+                        "Angular Frequency (ω)",
+                        f"{omega:.4f} rad/s"
+                    )
+
+                    b.metric(
+                        "Loading Distance",
+                        f"{distance:.4f} m"
+                    )
+
+                    # -------------------------------------
+                    # 3. NATURAL FREQUENCY
+                    # -------------------------------------
+
+                    st.divider()
+
+                    st.markdown("### 3. Natural Frequency")
+
+                    a, b, c = st.columns(3)
+
+                    a.metric(
+                        "Undamped Natural Frequency",
+                        f"{natural_frequency:.4f} Hz"
+                    )
+
+                    b.metric(
+                        "Damped Natural Frequency",
+                        f"{damped_frequency:.4f} Hz"
+                    )
+
+                    c.metric(
+                        "Natural Angular Frequency",
+                        f"{omega_n:.4f} rad/s"
+                    )
+
+                    # -------------------------------------
+                    # 4. DYNAMIC AMPLIFICATION FACTOR
+                    # -------------------------------------
+
+                    st.divider()
+
+                    st.markdown("### 4. Dynamic Amplification Factor")
+
+                    a, b, c = st.columns(3)
+
+                    a.metric(
+                        "Dynamic Peak Displacement",
+                        f"{dynamic_peak * 1000:.6f} mm"
+                    )
+
+                    b.metric(
+                        "Static Displacement",
+                        f"{static_displacement * 1000:.6f} mm"
+                    )
+
+                    c.metric(
+                        "Dynamic Amplification Factor",
+                        f"{daf:.6f}"
+                    )
+
+                    # -------------------------------------
+                    # 5. RESPONSE FACTOR
+                    # -------------------------------------
+
+                    st.divider()
+
+                    st.markdown("### 5. Response Factor")
+
+                    a, b = st.columns(2)
+
+                    a.metric(
+                        "Response Factor",
+                        f"{response_factor:.6f}"
+                    )
+
+                    b.metric(
+                        "Response Reduction",
+                        f"{reduction:.4f}%"
+                    )
+
+                    # -------------------------------------
+                    # 6. STRAIN CALCULATION
+                    # -------------------------------------
+
+                    st.divider()
+
+                    st.markdown("### 6. Tensile Strain Calculation")
+
+                    a, b = st.columns(2)
+
+                    a.metric(
+                        "Reference Strain",
+                        f"{reference_strain:.4f} με"
+                    )
+
+                    b.metric(
+                        "Calculated Tensile Strain",
+                        f"{tensile_strain * 1e6:.4f} με"
+                    )
+
+                    # -------------------------------------
+                    # 7. FATIGUE DAMAGE
+                    # -------------------------------------
+
+                    st.divider()
+
+                    st.markdown("### 7. Fatigue Damage")
+
+                    a, b, c = st.columns(3)
+
+                    a.metric(
+                        "Allowable Fatigue Life (Nf)",
+                        f"{nf:,.2f}" if nf else "—"
+                    )
+
+                    b.metric(
+                        "Applied Repetitions",
+                        f"{repetitions:,.0f}"
+                    )
+
+                    c.metric(
+                        "Fatigue Damage",
+                        f"{damage:.8f}" if damage is not None else "—"
+                    )
+
+                    # -------------------------------------
+                    # COMPLETE RESULTS
+                    # -------------------------------------
+
+                    st.divider()
+
+                    st.subheader("Complete Calculation Results")
+
+                    results = pd.DataFrame([
+                        ["Storage Modulus", storage, "MPa"],
+                        ["Loss Modulus", loss, "MPa"],
+                        ["tan(δ)", tan_delta, "-"],
+                        ["Damping Ratio", zeta, "-"],
+                        ["Damping Coefficient", damping_c, "Ns/m"],
+                        ["Vehicle Speed", vehicle_speed, "km/h"],
+                        ["Vehicle Speed", speed_ms, "m/s"],
+                        ["Loading Duration", td, "s"],
+                        ["Characteristic Frequency", fc, "Hz"],
+                        ["Angular Frequency", omega, "rad/s"],
+                        ["Natural Frequency", natural_frequency, "Hz"],
+                        ["Damped Natural Frequency", damped_frequency, "Hz"],
+                        ["Dynamic Peak Displacement", dynamic_peak, "m"],
+                        ["Static Displacement", static_displacement, "m"],
+                        ["Dynamic Amplification Factor", daf, "-"],
+                        ["Response Factor", response_factor, "-"],
+                        ["Response Reduction", reduction, "%"],
+                        ["Reference Tensile Strain", reference_strain, "με"],
+                        ["Calculated Tensile Strain", tensile_strain * 1e6, "με"],
+                        ["Fatigue Life", nf, "repetitions"],
+                        ["Applied Repetitions", repetitions, "repetitions"],
+                        ["Fatigue Damage", damage, "-"]
+                    ], columns=["Parameter", "Value", "Unit"])
+
+                    st.dataframe(
+                        results,
+                        hide_index=True,
+                        use_container_width=True
+                    )
+
+                    st.download_button(
+                        "Download Calculation Results",
+                        results.to_csv(index=False).encode("utf-8"),
+                        "pavement_results.csv",
+                        "text/csv",
+                        key="download_results"
+                    )
 
     else:
+        st.write("Enter valid material properties and vehicle speed.")
 
-        st.write("Enter valid storage and loss modulus values.")
 
-
-# =====================================================
+# =========================================================
 # TAB 2 — PROJECT PARAMETERS
-# =====================================================
+# =========================================================
 
 with tab2:
 
     st.subheader("Project Parameters")
 
     st.write(
-        "All reference values are prefilled. "
-        "You can edit any parameter here."
+        "All default values are prefilled and editable. "
+        "Changes automatically update the main calculation."
     )
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    with col1:
+    with c1:
 
         mass = numeric_input(
-            "Mass (M)",
+            "Equivalent Mass",
             "mass",
             "kg",
             minimum=0.000001
         )
 
         stiffness = numeric_input(
-            "Stiffness (K)",
+            "Equivalent Stiffness",
             "stiffness",
             "N/m",
             minimum=0.000001
         )
 
         vehicle_load = numeric_input(
-            "Vehicle Load (P₀)",
+            "Vehicle Load",
             "vehicle_load",
             "N",
-            minimum=0
+            minimum=0.000001
         )
 
-    with col2:
-
         loading_distance = numeric_input(
-            "Loading Distance (D)",
+            "Characteristic Loading Length",
             "loading_distance",
             "m",
             minimum=0.000001
         )
+
+    with c2:
 
         simulation_duration = numeric_input(
             "Simulation Duration",
@@ -296,226 +664,61 @@ with tab2:
             "°C"
         )
 
-    with col3:
+        reference_strain = numeric_input(
+            "Reference Tensile Strain",
+            "reference_strain",
+            "με",
+            minimum=0.000001
+        )
 
-        speeds = st.multiselect(
-            "Vehicle Speeds",
-            options=[20, 40, 60, 80],
-            key="vehicle_speeds"
+        asphalt_modulus = numeric_input(
+            "Asphalt Modulus",
+            "asphalt_modulus",
+            "psi",
+            minimum=0.000001
+        )
+
+    with c3:
+
+        repetitions = numeric_input(
+            "Applied Load Repetitions",
+            "load_repetitions",
+            "repetitions",
+            minimum=0
+        )
+
+        steps = numeric_input(
+            "Numerical Time Steps",
+            "time_steps",
+            minimum=100
         )
 
     st.divider()
 
-    st.subheader("Current Material Inputs")
+    st.subheader("Current Project Values")
 
-    storage = float(st.session_state["storage_modulus"])
-    loss = float(st.session_state["loss_modulus"])
+    parameter_data = [
+        ["Mass", st.session_state["mass"], "kg"],
+        ["Stiffness", st.session_state["stiffness"], "N/m"],
+        ["Vehicle Load", st.session_state["vehicle_load"], "N"],
+        ["Loading Distance", st.session_state["loading_distance"], "m"],
+        ["Simulation Duration", st.session_state["simulation_duration"], "s"],
+        ["Temperature", st.session_state["temperature"], "°C"],
+        ["Reference Tensile Strain", st.session_state["reference_strain"], "με"],
+        ["Asphalt Modulus", st.session_state["asphalt_modulus"], "psi"],
+        ["Applied Load Repetitions", st.session_state["load_repetitions"], "repetitions"],
+        ["Vehicle Speed", st.session_state["vehicle_speed"], "km/h"]
+    ]
 
     st.dataframe(
-        pd.DataFrame([
-            ["Storage Modulus", storage, "MPa"],
-            ["Loss Modulus", loss, "MPa"]
-        ], columns=["Parameter", "Value", "Unit"]),
+        pd.DataFrame(
+            parameter_data,
+            columns=["Parameter", "Value", "Unit"]
+        ),
         hide_index=True,
         use_container_width=True
     )
 
-    st.divider()
-
-    st.subheader("Calculated Reference Results")
-
-    tan_delta, zeta = calculate_damping(
-        storage,
-        loss
-    )
-
-    if zeta is not None and mass is not None and stiffness is not None:
-
-        damping_c = calculate_damping_coefficient(
-            mass,
-            stiffness,
-            zeta
-        )
-
-        c1, c2 = st.columns(2)
-
-        c1.metric(
-            "Calculated Damping Ratio",
-            f"{zeta:.6f}"
-        )
-
-        c2.metric(
-            "Calculated Damping Coefficient",
-            f"{damping_c:,.4f} Ns/m"
-        )
-
-
-# =====================================================
-# TAB 3 — VISUALISATION
-# =====================================================
-
-with tab3:
-
-    st.subheader("Result Visualisation")
-
-    storage = float(st.session_state["storage_modulus"])
-    loss = float(st.session_state["loss_modulus"])
-
-    mass = float(st.session_state["mass"])
-    stiffness = float(st.session_state["stiffness"])
-
-    tan_delta, zeta = calculate_damping(
-        storage,
-        loss
-    )
-
-    if zeta is not None:
-
-        damping_c = calculate_damping_coefficient(
-            mass,
-            stiffness,
-            zeta
-        )
-
-        # ---------------------------------------------
-        # MODULUS GRAPH
-        # ---------------------------------------------
-
-        if st.checkbox(
-            "Visualise Storage and Loss Modulus",
-            key="visual_modulus"
-        ):
-
-            fig1 = go.Figure(
-                go.Bar(
-                    x=["Storage Modulus", "Loss Modulus"],
-                    y=[storage, loss],
-                    text=[
-                        f"{storage:.2f}",
-                        f"{loss:.2f}"
-                    ],
-                    textposition="outside"
-                )
-            )
-
-            fig1.update_layout(
-                template="plotly_white",
-                title="Storage and Loss Modulus",
-                xaxis_title="Material Property",
-                yaxis_title="Modulus (MPa)"
-            )
-
-            st.plotly_chart(
-                fig1,
-                use_container_width=True
-            )
-
-        # ---------------------------------------------
-        # DAMPING RATIO GRAPH
-        # ---------------------------------------------
-
-        if st.checkbox(
-            "Visualise Damping Ratio",
-            key="visual_damping"
-        ):
-
-            fig2 = go.Figure(
-                go.Indicator(
-                    mode="gauge+number",
-                    value=zeta,
-                    title={"text": "Damping Ratio (ζ)"},
-                    gauge={
-                        "axis": {
-                            "range": [0, max(0.5, zeta * 1.25)]
-                        }
-                    }
-                )
-            )
-
-            fig2.update_layout(
-                template="plotly_white"
-            )
-
-            st.plotly_chart(
-                fig2,
-                use_container_width=True
-            )
-
-        # ---------------------------------------------
-        # DAMPING COEFFICIENT
-        # ---------------------------------------------
-
-        if st.checkbox(
-            "Visualise Damping Coefficient",
-            key="visual_coefficient"
-        ):
-
-            fig3 = go.Figure(
-                go.Bar(
-                    x=["Damping Coefficient"],
-                    y=[damping_c],
-                    text=[f"{damping_c:.4f}"],
-                    textposition="outside"
-                )
-            )
-
-            fig3.update_layout(
-                template="plotly_white",
-                title="Calculated Damping Coefficient",
-                yaxis_title="C (Ns/m)"
-            )
-
-            st.plotly_chart(
-                fig3,
-                use_container_width=True
-            )
-
-
-# =====================================================
-# EXPORT RESULTS
-# =====================================================
-
-st.divider()
-
-st.subheader("Export Results")
-
-try:
-
-    storage = float(st.session_state["storage_modulus"])
-    loss = float(st.session_state["loss_modulus"])
-    mass = float(st.session_state["mass"])
-    stiffness = float(st.session_state["stiffness"])
-
-    tan_delta, zeta = calculate_damping(
-        storage,
-        loss
-    )
-
-    if zeta is not None:
-
-        damping_c = calculate_damping_coefficient(
-            mass,
-            stiffness,
-            zeta
-        )
-
-        export_df = pd.DataFrame([
-            ["Storage Modulus", storage, "MPa"],
-            ["Loss Modulus", loss, "MPa"],
-            ["tan(δ)", tan_delta, "-"],
-            ["Damping Ratio", zeta, "-"],
-            ["Mass", mass, "kg"],
-            ["Stiffness", stiffness, "N/m"],
-            ["Damping Coefficient", damping_c, "Ns/m"]
-        ], columns=["Parameter", "Value", "Unit"])
-
-        st.download_button(
-            "Download Results CSV",
-            export_df.to_csv(index=False).encode("utf-8"),
-            file_name="pavement_damping_results.csv",
-            mime="text/csv",
-            key="download_results"
-        )
 
 except (ValueError, TypeError):
     pass
